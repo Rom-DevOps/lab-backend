@@ -1,55 +1,65 @@
-# CI — build + push the BACKEND image (app-backend) to ECR via OIDC.
-# Auth uses OIDC: the workflow assumes an IAM role for temporary credentials (NO static Access Key).
-# CI only builds + pushes; it does NOT deploy. Deploy is handled by the lab-gitops repo (ArgoCD GitOps):
-# bump image.backend.tag in lab-gitops -> commit -> ArgoCD syncs.
-#
-# TODO (GitOps loop): to fully close the loop automatically, a follow-up step could bump
-# image.backend.tag in the lab-gitops repo to ${{ github.sha }} (commit + push cross-repo).
-# That needs a cross-repo write token stored as a secret (e.g. GITOPS_TOKEN). Left as a
-# documented TODO on purpose — an untested token flow is not implemented here.
+# CI — build + push image BACKEND (app-backend) len Docker Hub.
+# Xac thuc bang 2 secret cua repo: DOCKERHUB_USERNAME + DOCKERHUB_TOKEN
+# (Access Token Docker Hub, quyen Read & Write). KHONG luu Access Key tinh nao.
+# CI chi build + push; KHONG deploy. Deploy do GitOps (ArgoCD) lo:
+# ghim tag image trong lab-gitops -> commit -> ArgoCD sync.
 name: CI
 
 on:
   push:
     branches: [main]
-    # Skip doc-only changes -> avoid useless image builds.
+    # Bo qua thay doi chi la tai lieu -> khoi build vo ich.
     paths-ignore:
       - "**/*.md"
-  workflow_dispatch: {} # allow manual run from the Actions tab
-
-# REQUIRED for OIDC: id-token: write lets the job request the token; contents: read for checkout.
-permissions:
-  id-token: write
-  contents: read
-
-env:
-  AWS_REGION: ap-south-1
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {} # cho phep chay tay tu tab Actions
 
 jobs:
+  # Chan loi som: soi Dockerfile bang hadolint (chi muc *error* moi lam fail).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
+
   build-and-push:
+    needs: lint # chi build khi lint xanh
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Assume the IAM role via OIDC -> temporary credentials (NO static Access Key).
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Khong khai 'registry:' -> mac dinh dang nhap Docker Hub. Khoa doc tu secrets.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
         with:
-          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # docker login to ECR with the temporary credentials above. Output 'registry' = $ECR.
-      - name: Log in to Amazon ECR
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      # Tu sinh tag: sha-<short> (bat bien, moi commit 1 tag) + latest (chi tren main).
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/app-backend
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
 
-      # --platform linux/amd64: EKS nodes are amd64; missing it can cause 'exec format error'.
-      # Build context is the repo root (".") since the source lives at the repo root.
+      # --platform linux/amd64: node EKS la amd64; quen co the gay 'exec format error'.
+      # PR chi build de kiem tra, KHONG push (push=false khi event la pull_request).
       - name: Build and push
-        env:
-          ECR: ${{ steps.ecr.outputs.registry }}
-        run: |
-          docker build --platform linux/amd64 \
-            -t $ECR/app-backend:${{ github.sha }} \
-            .
-          docker push $ECR/app-backend:${{ github.sha }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
