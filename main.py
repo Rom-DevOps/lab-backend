@@ -16,6 +16,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 # --- Cau hinh tu bien moi truong (khong hardcode) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./todo.db")
 WELCOME_MESSAGE = os.getenv("WELCOME_MESSAGE", "Welcome to the Todo lab!")
+APP_VERSION = os.getenv("APP_VERSION", "1.1.0")  # bump de tao image moi (demo CI/CD)
 
 # SQLite can connect_args dac thu; Postgres thi khong.
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -74,6 +75,11 @@ def health():
 @app.get("/api/welcome")
 def welcome():
     return {"message": WELCOME_MESSAGE}
+
+
+@app.get("/api/version")
+def version():
+    return {"version": APP_VERSION}
 
 
 @app.get("/api/todos", response_model=list[TodoOut])
